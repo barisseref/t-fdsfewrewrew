@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Tahta</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.js"></script>
+
+  <style>
+    #color-select {
+      margin-right: 10px;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+    }
+    .top-bar {
+      width: 80%;
+      height: 30px;
+      margin: 0 10%;
+      position: fixed;
+      align-items: center;
+      border-radius: 10px;
+      background-color: rgb(30, 106, 219);
+      display: flex;
+      justify-content: space-around;
+      flex-direction: row;
+      flex-wrap: wrap;
+      text-align: center;
+    }
+    #pdf-render {
+      background-color: rgb(255, 255, 255);
+      margin: 0 auto; /* Canvas'ı yatayda ortala */
+      display: block; /* Canvas'ı blok seviyesinde görüntüle */
+      border: 1px solid black;
+      border-radius: 5px;
+    }
+    button {
+      background-color: rgb(4, 109, 255);
+      color: beige;
+      border-radius: 10px;
+    }
+    #pdf-render {
+      background-color: rgb(255, 255, 255);
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <select id="pdf-select">
+      <option value="pdf3.pdf">Matematik - Ünite 1</option>
+      <option value="pdf2.pdf">Türkçe - Ünite 1</option>
+      <option value="pdf.pdf">Edebiyat - Ünite 1</option>
+    </select>
+    <button id="prev-page">Geri</button>
+    <button id="next-page">İleri</button>
+    <span> <span id="page-num"></span> / <span id="page-count"></span></span>
+    <input type="color" id="color-select" value="#000000"> <!-- Renk seçimi için -->
+    <input type="number" id="thickness-input" min="1" max="10" value="2"> <!-- Kalınlık seçimi için -->
+    <button id="clear-canvas">Boş sayfa</button>
+    <button id="kalem-icon">Kalem</button>
+    <button id="save-image">Anlık Görüntü</button> <!-- Görüntüyü kaydetmek için -->
+  </div>
+  <canvas id="pdf-render"></canvas>
+  <script>
+    const drawingData = {}; // Tüm çizim verilerini saklamak için ana nesne
+
+    const drawingCanvas = document.querySelector('#pdf-render');
+    const ctx = drawingCanvas.getContext('2d');
+    const pdfCanvas = document.querySelector('#pdf-render');
+    const colorSelect = document.querySelector('#color-select');
+    const thicknessInput = document.querySelector('#thickness-input');
+    const saveImageBtn = document.querySelector('#save-image');
+
+    let pdfDoc = null;
+    let pageNum = 1;
+    let pageIsRendering = false;
+    let pageNumIsPending = null;
+    const scale = 1.5;
+
+    let drawingColor = '#000000';
+    let drawingThickness = 2;
+    let isDrawing = false;
+    let lastX = 0;
+    let lastY = 0;
+    let drawings = {}; // Çizimleri saklamak için nesne
+
+    drawingCanvas.width = 100; // Canvas genişliğini ayarlayın
+    drawingCanvas.height = 100; // Canvas yüksekliğini ayarlayın
+
+    // Sayfa çizimlerini saklamak için ayrı nesneler oluşturun
+    function createDrawingDataForPage(pageNumber) {
+      if (!drawingData[pageNumber]) {
+        drawingData[pageNumber] = [];
+      }
+    }
+
+    // Çizim tamamlandığında çizimi sakla
+    function saveDrawingDataToLocalStorage() {
+      localStorage.setItem('drawingData', JSON.stringify(drawingData));
+    }
+    function loadDrawingDataFromLocalStorage() {
+      const savedData = localStorage.getItem('drawingData');
+      if (savedData) {
+        drawingData = JSON.parse(savedData);
+      }
+    }
+    // Function to start drawing
+    function startDrawing(e) {
+      if (!isDrawing) return;
+      ctx.strokeStyle = drawingColor;
+      ctx.lineWidth = drawingThickness;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(lastX, lastY);
+      ctx.lineTo(e.clientX - drawingCanvas.getBoundingClientRect().left, e.clientY - drawingCanvas.getBoundingClientRect().top);
+      ctx.stroke();
+      [lastX, lastY] = [e.clientX - drawingCanvas.getBoundingClientRect().left, e.clientY - drawingCanvas.getBoundingClientRect().top];
+      // Çizim verilerini kaydet
+      saveDrawingData(pageNum, lastX, lastY, drawingColor, drawingThickness);
+    }
+
+    // Silme Butonu
+    document.querySelector('#clear-canvas').addEventListener('click', () => {
+      ctx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+      drawingData[pageNum] = []; // Sayfa çizim verilerini temizle
+    });
+
+    // Event listeners for drawing
+    drawingCanvas.addEventListener('mousedown', (e) => {
+      if (isDrawing) {
+        isDrawing = false;
+        return;
+      }
+      isDrawing = true;
+      [lastX, lastY] = [e.clientX - drawingCanvas.getBoundingClientRect().left, e.clientY - drawingCanvas.getBoundingClientRect().top];
+    });
+
+    drawingCanvas.addEventListener('mousemove', startDrawing);
+    drawingCanvas.addEventListener('mouseup', () => {
+      isDrawing = false;
+    });
+    drawingCanvas.addEventListener('mouseout', () => isDrawing = false);
+
+    // Function to render a specific page
+    const renderPage = num => {
+      pageIsRendering = true;
+
+      // Get page
+      pdfDoc.getPage(num).then(page => {
+        // Set scale
+        const viewport = page.getViewport({ scale });
+        pdfCanvas.height = viewport.height;
+        pdfCanvas.width = viewport.width;
+
+        const renderCtx = {
+          canvasContext: ctx,
+          viewport
+        };
+
+        page.render(renderCtx).promise.then(() => {
+          pageIsRendering = false;
+
+          if (pageNumIsPending !== null) {
+            renderPage(pageNumIsPending);
+            pageNumIsPending = null;
+          }
+
+          // Önceki sayfadan çizimleri geri yükle
+          const pageKey = `page${num}`;
+          if (drawingData[pageKey]) {
+            drawingData[pageKey].forEach((drawing) => {
+              ctx.strokeStyle = drawing.color;
+              ctx.lineWidth = drawing.thickness;
+              ctx.lineJoin = 'round';
+              ctx.lineCap = 'round';
+              ctx.beginPath();
+              ctx.moveTo(drawing.x, drawing.y);
+              drawingData[pageKey].forEach(point => {
+                ctx.lineTo(point.x, point.y);
+              });
+              ctx.stroke();
+            });
+          }
+        });
+
+        // Output current page
+        document.querySelector('#page-num').textContent = num;
+      });
+    }
+
+    // Check for pages rendering
+    const queueRenderPage = num => {
+      if (pageIsRendering) {
+        pageNumIsPending = num;
+      } else {
+        renderPage(num);
+      }
+    };
+
+    // Show Prev Page
+    const showPrevPage = () => {
+      if (pageNum <= 1) {
+        return;
+      }
+      pageNum--;
+      queueRenderPage(pageNum);
+    };
+
+    // Show Next Page
+    const showNextPage = () => {
+      if (pageNum >= pdfDoc.numPages) {
+        return;
+      }
+      pageNum++;
+      queueRenderPage(pageNum);
+    };
+
+    // Load the selected PDF file
+    const loadPDF = () => {
+      const pdfSelect = document.querySelector('#pdf-select');
+      const selectedPDF = pdfSelect.options[pdfSelect.selectedIndex].value;
+      pageNum = 1;
+      pdfjsLib
+        .getDocument(selectedPDF)
+        .promise.then(pdfDoc_ => {
+          pdfDoc = pdfDoc_;
+          document.querySelector('#page-count').textContent = pdfDoc.numPages;
+          renderPage(pageNum);
+        })
+        .catch(err => {
+          // Display error
+          const div = document.createElement('div');
+          div.className = 'error';
+          div.appendChild(document.createTextNode(err.message));
+          document.querySelector('body').insertBefore(div, pdfCanvas);
+          // Remove top bar
+          document.querySelector('.top-bar').style.display = 'none';
+        });
+    };
+
+    // Kalem SVG
+    const kalemIconSVG = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-pen" viewBox="0 0 16 16">
+        <path d="m13.498.795.149-.149a1.207 1.207 0 1 1 1.707 1.708l-.149.148a1.5 1.5 0 0 1-.059 2.059L4.854 14.854a.5.5 0 0 1-.233.131l-4 1a.5.5 0 0 1-.606-.606l1-4a.5.5 0 0 1 .131-.232l9.642-9.642a.5.5 0 0 0-.642.056L6.854 4.854a.5.5 0 1 1-.708-.708L9.44.854A1.5 1.5 0 0 1 11.5.796a1.5 1.5 0 0 1 1.998-.001zm-.644.766a.5.5 0 0 0-.707 0L1.95 11.756l-.764 3.057 3.057-.764L14.44 3.854a.5.5 0 0 0 0-.708l-1.585-1.585z"/>
+      </svg>
+    `;
+
+    // Kalem SVG'yi DOM'a ekleyin
+    const kalemIcon = new Image();
+    kalemIcon.src = `data:image/svg+xml;base64,${btoa(kalemIconSVG)}`;
+    kalemIcon.style.cursor = 'url(' + kalemIcon.src + ') 0 24, auto';
+
+    // İleri ve geri butonlarına tıklanınca imleci normale döndürün
+    document.querySelector('#prev-page').addEventListener('click', () => {
+      drawingCanvas.style.cursor = 'url(' + kalemIcon.src + ') 0 24, auto';
+    });
+    document.querySelector('#next-page').addEventListener('click', () => {
+      drawingCanvas.style.cursor = 'url(' + kalemIcon.src + ') 0 24, auto';
+    });
+
+    // Kalem düğmesine tıklanınca imleci kalem şekline dönüştür
+    let isDrawingMode = false; // Çizim modunu izlemek için bir değişken ekleyin
+    document.querySelector('#kalem-icon').addEventListener('click', () => {
+      isDrawingMode = !isDrawingMode; // Çizim modunu tersine çevir
+      if (isDrawingMode) {
+        drawingCanvas.style.cursor = 'url(' + kalemIcon.src + ') 0 24, auto';
+      } else {
+        drawingCanvas.style.cursor = 'auto';
+        isDrawing = false; // Çizim modunu devre dışı bırak
+      }
+    });
+
+    // Event listeners for drawing
+    drawingCanvas.addEventListener('touchstart', (e) => {
+      e.preventDefault(); // Sayfa kaydırmasını önlemek için varsayılan davranışı iptal edin
+      if (isDrawing) {
+        isDrawing = false;
+        return;
+      }
+      isDrawing = true;
+      const touch = e.touches[0]; // İlk dokunuşu alın
+      [lastX, lastY] = [touch.clientX - drawingCanvas.getBoundingClientRect().left, touch.clientY - drawingCanvas.getBoundingClientRect().top];
+    });
+
+    drawingCanvas.addEventListener('touchmove', (e) => {
+      e.preventDefault(); // Sayfa kaydırmasını önlemek için varsayılan davranışı iptal edin
+      const touch = e.touches[0]; // İlk dokunuşu alın
+      startDrawing({ clientX: touch.clientX, clientY: touch.clientY });
+    });
+
+    drawingCanvas.addEventListener('touchend', (e) => {
+      e.preventDefault(); // Sayfa kaydırmasını önlemek için varsayılan davranışı iptal edin
+      isDrawing = false;
+      // Çizim tamamlandığında çizimi sakla
+      saveDrawingData(pageNum, lastX, lastY, drawingColor, drawingThickness);
+    });
+
+    // Button Events
+    document.querySelector('#prev-page').addEventListener('click', showPrevPage);
+    document.querySelector('#next-page').addEventListener('click', showNextPage);
+    document.querySelector('#pdf-select').addEventListener('change', loadPDF);
+
+    // Color selection
+    colorSelect.addEventListener('input', (e) => {
+      drawingColor = e.target.value;
+    });
+
+    // Thickness selection
+    thicknessInput.addEventListener('input', (e) => {
+      drawingThickness = parseInt(e.target.value);
+    });
+
+    // Save image
+    saveImageBtn.addEventListener('click', () => {
+      const image = drawingCanvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = image;
+      a.download = 'drawing.png';
+      a.click();
+    });
+
+    // Initialize with the default PDF
+    loadPDF();
+  </script>
+</body>
+</html>
